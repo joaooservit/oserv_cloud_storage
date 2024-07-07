@@ -5,36 +5,46 @@ import time
 from tqdm import tqdm
 from parameters import *
 
-def init():
-    welcome_message = '''
-==========================
-oserv-cloud-storage - 1.0v
-@author: Joao Vidal
-==========================
+# Diretório corrente inicial
+current_folder_id = root_folder_id
+current_folder_name = "/"
 
-'''
-    print(welcome_message)
+def main():
     access_token = get_access_token()
     while True:
-        print('1 - Upload file/folder')
-        print('2 - Download file/folder')
-        print('4 - Exit')
-        option = input('Choose an option: ')
-        
-        if option == '1':
-            file_name = input('Enter the file/folder that you want to upload [ FULL PATH ]: ')
-            upload(access_token, file_name)
-        elif option == '2':
-            file_name = input('Enter the file/folder that you want to download: ')
-            download(access_token, file_name)
-        elif option == '4':
+        command = input(f'[{current_folder_name}] >> ').strip().split()
+        if not command:
+            continue
+
+        if command[0] == 'ls':
+            list_files(access_token)
+        elif command[0] == 'upload' and len(command) > 1:
+            upload(access_token, command[1])
+        elif command[0] == 'download' and len(command) > 1:
+            download(access_token, command[1])
+        elif command[0] == 'cd' and len(command) > 1:
+            change_directory(access_token, command[1])
+        elif command[0] == 'help':
+            show_help()
+        elif command[0] == 'exit':
             print('Finishing...')
             break
         else:
-            print('Invalid option')
-        input('Press Enter to continue...')
-        os.system('clear')
+            print('Invalid command')
+            show_help()
 
+def show_help():
+    help_message = '''
+Available commands:
+  ls                - List files and directories in the current directory
+  upload [path]     - Upload a file or folder to the current directory
+  download [path]   - Download a file or folder from the current directory
+  cd [directory]    - Change the current directory
+  cd ..             - Go up one directory level (cannot go above root)
+  help              - Show this help message
+  exit              - Exit the program
+'''
+    print(help_message)
 
 def get_access_token():
     app = msal.ConfidentialClientApplication(
@@ -50,8 +60,18 @@ def get_access_token():
     else:
         raise Exception('Could not obtain access token')
 
+def list_files(access_token):
+    global current_folder_id
+    files = list_folder_contents(access_token, current_folder_id)
+    if files is None or 'value' not in files:
+        print(f"Erro ao listar conteúdo da pasta '{current_folder_name}'.")
+        return
 
-def list_folder_contents(access_token, folder_id=root_folder_id):
+    for file in files['value']:
+        file_type = 'DIR' if 'folder' in file else 'FILE'
+        print(f"{file['name']} - {file_type}")
+
+def list_folder_contents(access_token, folder_id):
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}/children'
     response = requests.get(
         url,
@@ -66,10 +86,12 @@ def list_folder_contents(access_token, folder_id=root_folder_id):
 def upload(access_token, file_name):
     if os.path.isdir(file_name):
         upload_folder(access_token, file_name)
-    else: 
+    else:
         upload_file(access_token, file_name)
 
-def upload_file(access_token, file_name, folder_id=root_folder_id):
+def upload_file(access_token, file_name, folder_id=None):
+    global current_folder_id
+    folder_id = folder_id or current_folder_id
     file_base_name = os.path.basename(file_name)
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}:/{file_base_name}:/content'
 
@@ -102,7 +124,9 @@ def read_in_chunks(file_object, pbar, chunk_size=8192):
         pbar.update(len(data))
         yield data
 
-def create_folder(access_token, folder_name, folder_id=root_folder_id):
+def create_folder(access_token, folder_name, folder_id=None):
+    global current_folder_id
+    folder_id = folder_id or current_folder_id
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}/children'
     
     folder_data = {
@@ -127,10 +151,10 @@ def create_folder(access_token, folder_name, folder_id=root_folder_id):
         print(f"Erro ao criar a pasta '{folder_name}': {response.status_code}")
         print(response.json())
         return None
-    
+
 def upload_folder(access_token, folder_path):
+    global current_folder_id
     folder_name = os.path.basename(folder_path)
-    # Cria a pasta raiz no SharePoint
     root_folder = create_folder(access_token, folder_name)
     if not root_folder:
         print("Erro ao criar a pasta raiz.")
@@ -152,6 +176,22 @@ def upload_folder(access_token, folder_path):
         for file_name in files:
             file_path = os.path.join(root, file_name)
             upload_file(access_token, file_path, remote_folder_id)
+
+def download(access_token, file_name):
+    files = list_folder_contents(access_token, current_folder_id)
+    if files is None or 'value' not in files:
+        print("Erro ao obter a lista de arquivos.")
+        return
+
+    for file in files['value']:
+        if file['name'] == file_name:
+            if 'folder' in file:
+                download_folder(access_token, file_name, file['id'])
+            else:
+                download_file(access_token, file_name, file['id'])
+            break
+    else:
+        print(f"Item '{file_name}' não encontrado no SharePoint.")
 
 def download_file(access_token, file_name, file_id):
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{file_id}/content'
@@ -197,43 +237,43 @@ def download_folder_contents(access_token, folder_id, local_folder_name):
             local_file_path = os.path.join(local_folder_name, file_name)
             download_file(access_token, local_file_path, file['id'])
 
-def download_folder(access_token, folder_name):
-    files = list_folder_contents(access_token)
-    if files is None or 'value' not in files:
-        print("Erro ao obter a lista de arquivos.")
-        return
-    
-    folder_id = None
-    for file in files['value']:
-        if file['name'] == folder_name:
-            folder_id = file['id']
-            break
-    
-    if folder_id is None:
-        print(f"Folder '{folder_name}' não encontrado no SharePoint.")
-        return
-    
+def download_folder(access_token, folder_name, folder_id):
     local_folder_name = folder_name.replace(' ', '_')
     os.makedirs(local_folder_name, exist_ok=True)
     
     download_folder_contents(access_token, folder_id, local_folder_name)
 
-def download(access_token, file_name):
-    # Verifica se o arquivo é uma pasta no SharePoint
-    files = list_folder_contents(access_token)
-    if files is None or 'value' not in files:
-        print("Erro ao obter a lista de arquivos.")
-        return
+def change_directory(access_token, directory_name):
+    global current_folder_id, current_folder_name
 
-    for file in files['value']:
-        if file['name'] == file_name:
-            if 'folder' in file:
-                download_folder(access_token, file_name)
-            else:
-                download_file(access_token, file_name, file['id'])
-            break
+    if directory_name == '..':
+        if current_folder_id == root_folder_id:
+            print("Você já está no diretório raiz e não pode subir mais.")
+            return
+
+        parent_folder_name = '/'.join(current_folder_name.strip('/').split('/')[:-1])
+        parent_folder_id = root_folder_id
+        if parent_folder_name:
+            parent_folder_contents = list_folder_contents(access_token, root_folder_id)
+            for item in parent_folder_contents['value']:
+                if item['name'] == parent_folder_name and 'folder' in item:
+                    parent_folder_id = item['id']
+                    break
+        current_folder_id = parent_folder_id
+        current_folder_name = '/' if not parent_folder_name else f'/{parent_folder_name}'
     else:
-        print(f"Item '{file_name}' não encontrado no SharePoint.")
+        files = list_folder_contents(access_token, current_folder_id)
+        if files is None or 'value' not in files:
+            print("Erro ao obter a lista de arquivos.")
+            return
+        
+        for file in files['value']:
+            if file['name'] == directory_name and 'folder' in file:
+                current_folder_id = file['id']
+                current_folder_name = current_folder_name.rstrip('/') + f'/{directory_name}'
+                break
+        else:
+            print(f"Diretório '{directory_name}' não encontrado.")
 
 if __name__ == '__main__':
-    init()
+    main()

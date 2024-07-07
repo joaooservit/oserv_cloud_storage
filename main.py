@@ -1,10 +1,7 @@
 import os
 import msal
 import requests
-from parameters import * 
-
-site_id = 'oservcombr.sharepoint.com,1a56d7c5-bb8e-4c78-aafb-c0ccaa39d5c8,e7396a79-87bd-4e23-bfb5-92a0b31e858e'
-folder_id = '012K4Y663ZLNZ56AX4HRAYJRL4PC3H4Y66'
+from parameters import *
 
 def init():
     welcome_message = '''
@@ -12,32 +9,39 @@ def init():
 oserv-cloud-storage - 1.0v
 @author: Joao Vidal
 ==========================
-
 '''
+    access_token = get_access_token()
+
     print(welcome_message)
     while True:
-        access_token = get_access_token()
-        print('1 - Upload file')
-        print('2 - Upload folder')
-        print('3 - Download file')
-        print('4 - Exit')
+        print('1 - Upload file/folder')
+        print('2 - Download file/folder')
+        print('3 - Exit')
         option = input('Choose an option: ')
         
         if option == '1':
-            print('Atencao: Você precisa estar no diretorio onde o arquivo esta localizado')
-            file_name = input('Enter the file name that you want to upload: ')
-            (upload_file(access_token, file_name, folder_id))
+            file_name = input('Enter the file/folder that you want to upload [ FULL PATH ]: ')
+            # verifica se ha um ./ no inicio do caminho e remove
+            if file_name[0] == '.' and file_name[1] == '/':
+                file_name = file_name[2:]
+                # adiciona o current_dir no caminho do arquivo
+                file_name = os.path.join(os.getcwd(), file_name)
+            upload(access_token, file_name)            
         elif option == '2':
-            (upload_directory(access_token))
+            file_name = input('Enter the file/folder that you want to download: ')
+            download(access_token, file_name)
         elif option == '3':
-            (download_file(access_token, file_name))
-        elif option == '4':
             print('Finishing...')
             break
         else:
             print('Invalid option')
         input('Press Enter to continue...')
-        os.system('clear')
+
+        # Verifica se o sistema operacional é Windows
+        if os.name == 'nt':
+            os.system('cls')
+        else:
+            os.system('clear')
 
 
 def get_access_token():
@@ -55,7 +59,7 @@ def get_access_token():
         raise Exception('Could not obtain access token')
 
 
-def list_folder_contents(access_token):
+def list_folder_contents(access_token, folder_id=root_folder_id):
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}/children'
     response = requests.get(
         url,
@@ -67,11 +71,20 @@ def list_folder_contents(access_token):
         return None
     return response.json()
 
+def upload(access_token, file_name):
 
-def upload_file(access_token, file_name, folder_id):
-
-    url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}:/{file_name}:/content'
+    if os.path.isdir(file_name):
+        upload_folder(access_token, file_name)
+    else: 
+        upload_file(access_token, file_name)
     
+    print("Upload concluído.")
+
+def upload_file(access_token, file_name, folder_id=root_folder_id):
+
+    file_base_name = os.path.basename(file_name)
+    url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}:/{file_base_name}:/content'
+
     with open(file_name, 'rb') as file_data:
         response = requests.put(
             url,
@@ -83,14 +96,13 @@ def upload_file(access_token, file_name, folder_id):
         )
     
     if response.status_code in [200, 201]:
-        print("Upload bem-sucedido!")
         return response.json()
     else:
         print(f"Erro no upload: {response.status_code}")
         print(response.json())
         return None
     
-def create_folder(access_token, folder_name):
+def create_folder(access_token, folder_name, folder_id=root_folder_id):
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}/children'
     
     folder_data = {
@@ -109,41 +121,38 @@ def create_folder(access_token, folder_name):
     )
     
     if response.status_code == 201:
-        print(f"Folder '{folder_name}' criado com sucesso!")
         return response.json()
     else:
         print(f"Erro ao criar a pasta '{folder_name}': {response.status_code}")
         print(response.json())
         return None
     
-def upload_directory(access_token):
-    folder_name = input('Enter the folder name that you want to upload: ')
-    for root, dirs, files in os.walk(folder_name):
-        relative_path = os.path.relpath(root, folder_name)
-        remote_folder_id = folder_id
-        
+def upload_folder(access_token, folder_path):
+    folder_name = os.path.basename(folder_path)
+    # Cria a pasta raiz no SharePoint
+    root_folder = create_folder(access_token, folder_name)
+    if not root_folder:
+        print("Erro ao criar a pasta raiz.")
+        return
+    
+    root_folder_id = root_folder['id']
+    
+    for root, dirs, files in os.walk(folder_path):
+        relative_path = os.path.relpath(root, folder_path)
+        remote_folder_id = root_folder_id
+
         if relative_path != '.':
-            # Cria a estrutura de pastas no SharePoint
             parts = relative_path.split(os.sep)
             for part in parts:
-                folder = create_folder(access_token, part)
+                folder = create_folder(access_token, part, remote_folder_id)
                 if folder:
                     remote_folder_id = folder['id']
         
         for file_name in files:
             file_path = os.path.join(root, file_name)
             upload_file(access_token, file_path, remote_folder_id)
-    
-def download_file(access_token):
 
-    file_name = input('Enter the file name that you want to download: ')
-    files = list_folder_contents(access_token)
-    for file in files['value']:
-        print(file['name'])
-        if file['name'] == file_name:
-            file_id = file['id']
-            break
-
+def download_file(access_token, file_name, file_id):
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{file_id}/content'
     
     response = requests.get(
@@ -156,13 +165,69 @@ def download_file(access_token):
         with open(file_name, 'wb') as file:
             for chunk in response.iter_content(chunk_size=8192):
                 file.write(chunk)
-        print("Download bem-sucedido!")
         return True
     else:
         print(f"Erro no download: {response.status_code}")
         print(response.json())
         return False
 
+def download_folder_contents(access_token, folder_id, local_folder_name):
+    files = list_folder_contents(access_token, folder_id)
+    
+    if files is None or 'value' not in files:
+        print(f"Erro ao listar conteúdo da pasta '{local_folder_name}'.")
+        return
+    
+    for file in files['value']:
+        if 'folder' in file:
+            subfolder_name = file['name'].replace(' ', '_')
+            local_subfolder_path = os.path.join(local_folder_name, subfolder_name)
+            os.makedirs(local_subfolder_path, exist_ok=True)
+            download_folder_contents(access_token, file['id'], local_subfolder_path)
+        else:
+            file_name = file['name'].replace(' ', '_')
+            local_file_path = os.path.join(local_folder_name, file_name)
+            download_file(access_token, local_file_path, file['id'])
+
+def download_folder(access_token, folder_name):
+    files = list_folder_contents(access_token)
+    if files is None or 'value' not in files:
+        print("Erro ao obter a lista de arquivos.")
+        return
+    
+    folder_id = None
+    for file in files['value']:
+        if file['name'] == folder_name:
+            folder_id = file['id']
+            break
+    
+    if folder_id is None:
+        print(f"Folder '{folder_name}' não encontrado no SharePoint.")
+        return
+    
+    local_folder_name = folder_name.replace(' ', '_')
+    os.makedirs(local_folder_name, exist_ok=True)
+    
+    download_folder_contents(access_token, folder_id, local_folder_name)
+
+def download(access_token, file_name):
+    # Verifica se o arquivo é uma pasta no SharePoint
+    files = list_folder_contents(access_token)
+    if files is None or 'value' not in files:
+        print("Erro ao obter a lista de arquivos.")
+        return
+
+    for file in files['value']:
+        if file['name'] == file_name:
+            if 'folder' in file:
+                download_folder(access_token, file_name)
+            else:
+                download_file(access_token, file_name, file['id'])
+            break
+    else:
+        print(f"Item '{file_name}' não encontrado no SharePoint.")
+    
+    print("Download concluído.")
+
 if __name__ == '__main__':
     init()
-   

@@ -1,6 +1,8 @@
 import os
 import msal
 import requests
+import time
+from tqdm import tqdm
 from parameters import *
 
 def init():
@@ -9,39 +11,29 @@ def init():
 oserv-cloud-storage - 1.0v
 @author: Joao Vidal
 ==========================
-'''
-    access_token = get_access_token()
 
+'''
     print(welcome_message)
+    access_token = get_access_token()
     while True:
         print('1 - Upload file/folder')
         print('2 - Download file/folder')
-        print('3 - Exit')
+        print('4 - Exit')
         option = input('Choose an option: ')
         
         if option == '1':
             file_name = input('Enter the file/folder that you want to upload [ FULL PATH ]: ')
-            # verifica se ha um ./ no inicio do caminho e remove
-            if file_name[0] == '.' and file_name[1] == '/':
-                file_name = file_name[2:]
-                # adiciona o current_dir no caminho do arquivo
-                file_name = os.path.join(os.getcwd(), file_name)
-            upload(access_token, file_name)            
+            upload(access_token, file_name)
         elif option == '2':
             file_name = input('Enter the file/folder that you want to download: ')
             download(access_token, file_name)
-        elif option == '3':
+        elif option == '4':
             print('Finishing...')
             break
         else:
             print('Invalid option')
         input('Press Enter to continue...')
-
-        # Verifica se o sistema operacional é Windows
-        if os.name == 'nt':
-            os.system('cls')
-        else:
-            os.system('clear')
+        os.system('clear')
 
 
 def get_access_token():
@@ -72,36 +64,44 @@ def list_folder_contents(access_token, folder_id=root_folder_id):
     return response.json()
 
 def upload(access_token, file_name):
-
     if os.path.isdir(file_name):
         upload_folder(access_token, file_name)
     else: 
         upload_file(access_token, file_name)
-    
-    print("Upload concluído.")
 
 def upload_file(access_token, file_name, folder_id=root_folder_id):
-
     file_base_name = os.path.basename(file_name)
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}:/{file_base_name}:/content'
 
-    with open(file_name, 'rb') as file_data:
+    file_size = os.path.getsize(file_name)
+    with open(file_name, 'rb') as file_data, tqdm(total=file_size, unit='B', unit_scale=True, desc=file_base_name) as pbar:
+        start_time = time.time()
         response = requests.put(
             url,
             headers={
                 'Authorization': f'Bearer {access_token}',
                 'Content-Type': 'application/octet-stream'
             },
-            data=file_data
+            data=read_in_chunks(file_data, pbar)
         )
-    
+        end_time = time.time()
+
     if response.status_code in [200, 201]:
+        print(f"Upload bem-sucedido! Velocidade média: {file_size / (end_time - start_time) / 1024:.2f} KB/s")
         return response.json()
     else:
         print(f"Erro no upload: {response.status_code}")
         print(response.json())
         return None
-    
+
+def read_in_chunks(file_object, pbar, chunk_size=8192):
+    while True:
+        data = file_object.read(chunk_size)
+        if not data:
+            break
+        pbar.update(len(data))
+        yield data
+
 def create_folder(access_token, folder_name, folder_id=root_folder_id):
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}/children'
     
@@ -121,6 +121,7 @@ def create_folder(access_token, folder_name, folder_id=root_folder_id):
     )
     
     if response.status_code == 201:
+        print(f"Folder '{folder_name}' criado com sucesso!")
         return response.json()
     else:
         print(f"Erro ao criar a pasta '{folder_name}': {response.status_code}")
@@ -160,11 +161,18 @@ def download_file(access_token, file_name, file_id):
         headers={'Authorization': f'Bearer {access_token}'},
         stream=True
     )
-    
-    if response.status_code == 200:
-        with open(file_name, 'wb') as file:
-            for chunk in response.iter_content(chunk_size=8192):
+
+    total_size = int(response.headers.get('content-length', 0))
+    start_time = time.time()
+    with open(file_name, 'wb') as file, tqdm(total=total_size, unit='B', unit_scale=True, desc=file_name) as pbar:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
                 file.write(chunk)
+                pbar.update(len(chunk))
+    end_time = time.time()
+
+    if response.status_code == 200:
+        print(f"Download bem-sucedido! Velocidade média: {total_size / (end_time - start_time) / 1024:.2f} KB/s")
         return True
     else:
         print(f"Erro no download: {response.status_code}")
@@ -226,8 +234,6 @@ def download(access_token, file_name):
             break
     else:
         print(f"Item '{file_name}' não encontrado no SharePoint.")
-    
-    print("Download concluído.")
 
 if __name__ == '__main__':
     init()

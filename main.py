@@ -60,6 +60,66 @@ def get_access_token():
     else:
         raise Exception('Could not obtain access token')
 
+CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB por fragmento
+
+def create_upload_session(access_token, file_name, folder_id):
+    url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}:/{file_name}:/createUploadSession'
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json'
+    }
+    data = {
+        "item": {
+            "@microsoft.graph.conflictBehavior": "rename",
+            "name": file_name
+        }
+    }
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        print(f"Erro ao criar a sessão de upload: {response.status_code}")
+        print(response.json())
+        return None
+    
+
+def upload_file_in_chunks(access_token, file_name, folder_id=None):
+    global current_folder_id
+    folder_id = folder_id or current_folder_id
+    file_size = os.path.getsize(file_name)
+    file_base_name = os.path.basename(file_name)
+
+    upload_session = create_upload_session(access_token, file_base_name, folder_id)
+    if not upload_session:
+        return None
+
+    upload_url = upload_session['uploadUrl']
+    with open(file_name, 'rb') as file_data, tqdm(total=file_size, unit='B', unit_scale=True, desc=file_base_name) as pbar:
+        chunk_number = 0
+        while True:
+            chunk_data = file_data.read(CHUNK_SIZE)
+            if not chunk_data:
+                break
+            start_index = chunk_number * CHUNK_SIZE
+            end_index = start_index + len(chunk_data) - 1
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Range': f'bytes {start_index}-{end_index}/{file_size}'
+            }
+            start_time = time.time()
+            response = requests.put(upload_url, headers=headers, data=chunk_data)
+            end_time = time.time()
+            if response.status_code not in [200, 201, 202]:
+                print(f"Erro ao enviar o fragmento {chunk_number}: {response.status_code}")
+                print(response.json())
+                return None
+            chunk_number += 1
+            pbar.update(len(chunk_data))
+            print(f"Velocidade média do fragmento: {len(chunk_data) / (end_time - start_time) / 1024:.2f} KB/s")
+
+    print("Upload bem-sucedido!")
+    return True
+
 def list_files(access_token):
     global current_folder_id
     files = list_folder_contents(access_token, current_folder_id)
@@ -87,7 +147,7 @@ def upload(access_token, file_name):
     if os.path.isdir(file_name):
         upload_folder(access_token, file_name)
     else:
-        upload_file(access_token, file_name)
+        upload_file_in_chunks(access_token, file_name)
 
 def upload_file(access_token, file_name, folder_id=None):
     global current_folder_id

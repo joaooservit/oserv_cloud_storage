@@ -10,6 +10,10 @@ current_folder_id = root_folder_id
 current_folder_name = "/"
 
 def main():
+    passwd = input('Enter the password: ')
+    if passwd != PASSWD:
+        print('Invalid password')
+        return
     access_token = get_access_token()
     while True:
         command = input(f'[{current_folder_name}] >> ').strip().split()

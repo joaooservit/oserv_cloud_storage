@@ -1,6 +1,6 @@
 parameters.py
-venv_ocs
-__pycache__
-dist
-build
+venv_ocs/
+__pycache__/
+build/
 *.spec
+token_cache.json

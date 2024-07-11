@@ -4,16 +4,22 @@ import requests
 import time
 from tqdm import tqdm
 from parameters import *
+import sys
+import json
 
 # Diretório corrente inicial
 current_folder_id = root_folder_id
 current_folder_name = "/"
 
+
+config = {
+    "client_id": CLIENT_ID,
+    "authority": AUTHORITY,
+    "scope": SCOPES,
+    "cache_file": CACHE_FILE
+}
+
 def main():
-    passwd = input('Enter the password: ')
-    if passwd != PASSWD:
-        print('Invalid password')
-        return
     access_token = get_access_token()
     while True:
         command = input(f'[{current_folder_name}] >> ').strip().split()
@@ -50,19 +56,51 @@ Available commands:
 '''
     print(help_message)
 
+def load_cache():
+    cache = msal.SerializableTokenCache()
+    if os.path.exists(config["cache_file"]):
+        cache.deserialize(open(config["cache_file"], 'r').read())
+    return cache
+
+def save_cache(cache):
+    if cache.has_state_changed:
+        with open(config["cache_file"], 'w') as f:
+            f.write(cache.serialize())
+
 def get_access_token():
-    app = msal.ConfidentialClientApplication(
-        APPLICATION_ID,
-        authority=AUTHORITY_URL,
-        client_credential=VALUE
+    cache = load_cache()
+    app = msal.PublicClientApplication(
+        config["client_id"], authority=config["authority"], token_cache=cache
     )
-    
-    result = app.acquire_token_for_client(scopes=SCOPES)
-    
-    if 'access_token' in result:
+
+    accounts = app.get_accounts()
+    if accounts:
+        print("Pick the account you want to use to proceed:")
+        for i, a in enumerate(accounts):
+            print(f"[{i}] {a['username']}")
+        idx = int(input("Enter the number of the account to use: "))
+        chosen = accounts[idx]
+        result = app.acquire_token_silent(config["scope"], account=chosen)
+        if result:
+            save_cache(cache)
+            return result['access_token']
+
+    print("No suitable token exists in cache. Let's get a new one from Azure AD.")
+    flow = app.initiate_device_flow(scopes=config["scope"])
+    if "user_code" not in flow:
+        raise ValueError(
+            "Fail to create device flow. Err: %s" % json.dumps(flow, indent=4))
+
+    print(flow["message"])
+    sys.stdout.flush()  
+
+    result = app.acquire_token_by_device_flow(flow)
+    if "access_token" in result:
+        save_cache(cache)
         return result['access_token']
     else:
-        raise Exception('Could not obtain access token')
+        raise Exception(f"Failed to acquire token: {result.get('error_description')}")
+
 
 CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB por fragmento
 
@@ -98,7 +136,7 @@ def upload_file_in_chunks(access_token, file_name, folder_id=None):
         return None
 
     upload_url = upload_session['uploadUrl']
-    with open(file_name, 'rb') as file_data, tqdm(total=file_size, unit='B', unit_scale=True, desc=file_base_name) as pbar:
+    with open(file_name, 'rb') as file_data, tqdm(total=file_size, unit='B', unit_scale=True, desc=file_base_name, leave=False) as pbar:
         chunk_number = 0
         while True:
             chunk_data = file_data.read(CHUNK_SIZE)
@@ -134,6 +172,7 @@ def list_files(access_token):
     for file in files['value']:
         file_type = 'DIR' if 'folder' in file else 'FILE'
         print(f"{file['name']} - {file_type}")
+    
 
 def list_folder_contents(access_token, folder_id):
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}/children'
@@ -160,7 +199,7 @@ def upload_file(access_token, file_name, folder_id=None):
     url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{folder_id}:/{file_base_name}:/content'
 
     file_size = os.path.getsize(file_name)
-    with open(file_name, 'rb') as file_data, tqdm(total=file_size, unit='B', unit_scale=True, desc=file_base_name) as pbar:
+    with open(file_name, 'rb') as file_data, tqdm(total=file_size, unit='B', unit_scale=True, desc=file_base_name, leave=False) as pbar:
         start_time = time.time()
         response = requests.put(
             url,
@@ -268,7 +307,7 @@ def download_file(access_token, file_name, file_id):
 
     total_size = int(response.headers.get('content-length', 0))
     start_time = time.time()
-    with open(file_name, 'wb') as file, tqdm(total=total_size, unit='B', unit_scale=True, desc=file_name) as pbar:
+    with open(file_name, 'wb') as file, tqdm(total=total_size, unit='B', unit_scale=True, desc=file_name, leave=False) as pbar:
         for chunk in response.iter_content(chunk_size=8192):
             if chunk:
                 file.write(chunk)
